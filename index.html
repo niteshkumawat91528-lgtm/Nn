@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>8-Bit Asteroids Ultimate</title>
+
+<!-- PWA -->
+<link rel="manifest" href="data:application/json,{
+  &quot;name&quot;:&quot;8-Bit Asteroids&quot;,
+  &quot;short_name&quot;:&quot;Asteroids&quot;,
+  &quot;display&quot;:&quot;standalone&quot;,
+  &quot;background_color&quot;:&quot;#000&quot;
+}">
+
+<style>
+body{margin:0;background:black;overflow:hidden;font-family:monospace}
+canvas{display:block;margin:auto;image-rendering:pixelated}
+#ui{position:absolute;top:10px;left:10px;color:white;z-index:2}
+#center{position:absolute;inset:0;display:flex;align-items:center;
+justify-content:center;color:white;text-align:center;font-size:18px;z-index:2}
+#fire{position:fixed;right:20px;bottom:20px;width:80px;height:80px;
+border:3px solid white;border-radius:50%;text-align:center;line-height:80px;z-index:2}
+.crt{
+ position:fixed;inset:0;pointer-events:none;
+ background:
+  repeating-linear-gradient(
+   to bottom,
+   rgba(255,255,255,0.03),
+   rgba(255,255,255,0.03) 1px,
+   transparent 2px,
+   transparent 4px
+  );
+ filter: blur(0.4px) contrast(1.2);
+}
+</style>
+</head>
+<body>
+
+<div id="ui"></div>
+<div id="center"></div>
+<div id="fire">FIRE</div>
+<div id="crt" class="crt"></div>
+<canvas id="game" width="600" height="600"></canvas>
+
+<script>
+// ===== CORE =====
+const c=game,ctx=c.getContext("2d");
+const ui=document.getElementById("ui");
+const center=document.getElementById("center");
+const crt=document.getElementById("crt");
+const W=c.width,H=c.height;
+
+// ===== SETTINGS =====
+let soundOn=true,crtOn=true;
+
+// ===== AUDIO =====
+const audio=new AudioContext();
+function sfx(f,d=0.1){
+ if(!soundOn) return;
+ let o=audio.createOscillator(),g=audio.createGain();
+ o.connect(g);g.connect(audio.destination);
+ o.frequency.value=f;o.start();
+ g.gain.setValueAtTime(0.07,audio.currentTime);
+ g.gain.exponentialRampToValueAtTime(0.001,audio.currentTime+d);
+ o.stop(audio.currentTime+d);
+}
+
+// ===== STATE =====
+const STATE={MENU:0,SETTINGS:1,PLAY:2,PAUSE:3,OVER:4};
+let state=STATE.MENU;
+
+// ===== STORAGE =====
+let hi=localStorage.getItem("hi")||0;
+
+// ===== INPUT =====
+const keys={};
+onkeydown=e=>{
+ keys[e.code]=true;
+ if(e.code==="Enter"&&state===STATE.MENU)start();
+ if(e.code==="KeyS"&&state===STATE.MENU)settings();
+ if(e.code==="KeyP"&&state===STATE.PLAY)pause();
+ else if(e.code==="KeyP"&&state===STATE.PAUSE)resume();
+ if(e.code==="KeyR"&&state===STATE.OVER)start();
+ if(e.code==="KeyF")fullscreen();
+};
+onkeyup=e=>keys[e.code]=false;
+fire.ontouchstart=()=>shoot();
+document.body.onclick=()=>fullscreen();
+
+// ===== OBJECTS =====
+let ship,bullets,asteroids,stars,score,lives,level,boss;
+
+// ===== INIT =====
+function start(){
+ score=0;lives=3;level=1;
+ bullets=[];asteroids=[];boss=null;
+ ship={x:W/2,y:H/2,a:0,vx:0,vy:0};
+ stars=[[],[],[]];
+ for(let l=0;l<3;l++)
+  for(let i=0;i<40;i++)
+   stars[l].push({x:Math.random()*W,y:Math.random()*H});
+ spawnWave();
+ state=STATE.PLAY;
+ center.innerHTML="";
+}
+
+// ===== MENU =====
+function settings(){
+ state=STATE.SETTINGS;
+ center.innerHTML=
+ `SETTINGS<br><br>
+ SOUND: ${soundOn?"ON":"OFF"} (Click)<br>
+ CRT: ${crtOn?"ON":"OFF"} (Double Click)<br><br>
+ PRESS ENTER`;
+ center.onclick=()=>{soundOn=!soundOn;settings();}
+ center.ondblclick=()=>{
+  crtOn=!crtOn;
+  crt.style.display=crtOn?"block":"none";
+  settings();
+ };
+}
+
+// ===== SPAWN =====
+function spawnWave(){
+ asteroids=[];
+ for(let i=0;i<level+3;i++)
+  asteroids.push({
+   x:Math.random()*W,y:Math.random()*H,
+   s:40,vx:(Math.random()-0.5)*(1+level*0.3),
+   vy:(Math.random()-0.5)*(1+level*0.3)
+  });
+ if(level%2===0)
+  boss={x:W/2,y:80,s:120,hp:10+level*2,vx:2};
+}
+
+// ===== LOOP =====
+function loop(){
+ if(state===STATE.PLAY)update();
+ draw();
+ requestAnimationFrame(loop);
+}
+
+// ===== UPDATE =====
+function update(){
+ stars.forEach((l,i)=>l.forEach(s=>{
+  s.y+=i+0.4;if(s.y>H)s.y=0;
+ }));
+
+ if(keys.ArrowLeft)ship.a-=0.07;
+ if(keys.ArrowRight)ship.a+=0.07;
+ if(keys.ArrowUp){
+  ship.vx+=Math.cos(ship.a)*0.1;
+  ship.vy+=Math.sin(ship.a)*0.1;
+ }
+ if(keys.Space){shoot();keys.Space=false;}
+
+ ship.x+=ship.vx;ship.y+=ship.vy;wrap(ship);
+ bullets.forEach(b=>{b.x+=b.vx;b.y+=b.vy;});
+ asteroids.forEach(a=>{a.x+=a.vx;a.y+=a.vy;wrap(a);});
+
+ if(boss){
+  boss.x+=boss.vx;
+  if(boss.x<0||boss.x>W)boss.vx*=-1;
+ }
+
+ collisions();
+
+ if(asteroids.length===0&&!boss){
+  level++;spawnWave();
+ }
+}
+
+// ===== ACTIONS =====
+function shoot(){
+ if(bullets.length>12)return;
+ sfx(700);
+ bullets.push({
+  x:ship.x,y:ship.y,
+  vx:Math.cos(ship.a)*6,
+  vy:Math.sin(ship.a)*6
+ });
+}
+
+// ===== COLLISION =====
+function hit(p,o){
+ return p.x>o.x-o.s/2&&p.x<o.x+o.s/2&&
+        p.y>o.y-o.s/2&&p.y<o.y+o.s/2;
+}
+function collisions(){
+ bullets=bullets.filter(b=>{
+  for(let i=asteroids.length-1;i>=0;i--){
+   if(hit(b,asteroids[i])){
+    score+=10;sfx(200);
+    asteroids.splice(i,1);
+    return false;
+   }
+  }
+  if(boss&&hit(b,boss)){
+   boss.hp--;sfx(100);
+   if(boss.hp<=0){score+=200;boss=null;}
+   return false;
+  }
+  return true;
+ });
+
+ asteroids.forEach(a=>{
+  if(hit(ship,a)){
+   lives--;sfx(60,0.3);
+   ship.x=W/2;ship.y=H/2;
+   if(lives<=0)gameOver();
+  }
+ });
+}
+
+// ===== STATES =====
+function pause(){state=STATE.PAUSE;center.innerHTML="PAUSED";}
+function resume(){state=STATE.PLAY;center.innerHTML="";}
+function gameOver(){
+ state=STATE.OVER;
+ hi=Math.max(hi,score);
+ localStorage.setItem("hi",hi);
+ center.innerHTML="GAME OVER<br>PRESS R";
+}
+
+// ===== DRAW =====
+function draw(){
+ ctx.clearRect(0,0,W,H);
+ stars.forEach((l,i)=>{
+  ctx.fillStyle="white";
+  l.forEach(s=>ctx.fillRect(s.x,s.y,1+i,1+i));
+ });
+
+ if(state!==STATE.MENU&&state!==STATE.SETTINGS){
+  ctx.save();
+  ctx.translate(ship.x,ship.y);
+  ctx.rotate(ship.a);
+  ctx.strokeStyle="white";
+  ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.moveTo(16,0);ctx.lineTo(-12,-10);ctx.lineTo(-12,10);
+  ctx.closePath();ctx.stroke();
+  ctx.restore();
+
+  bullets.forEach(b=>ctx.fillRect(b.x,b.y,3,3));
+  asteroids.forEach(a=>ctx.strokeRect(a.x-a.s/2,a.y-a.s/2,a.s,a.s));
+  if(boss){
+   ctx.strokeStyle="red";
+   ctx.strokeRect(boss.x-boss.s/2,boss.y-boss.s/2,boss.s,boss.s);
+  }
+ }
+
+ if(state===STATE.MENU)
+  center.innerHTML="8-BIT ASTEROIDS<br><br>ENTER = PLAY<br>S = SETTINGS";
+
+ ui.innerHTML=`SCORE ${score||0}<br>HI ${hi}<br>LIVES ${lives||0}<br>LEVEL ${level||1}`;
+}
+
+// ===== UTIL =====
+function wrap(o){
+ if(o.x<0)o.x=W;if(o.x>W)o.x=0;
+ if(o.y<0)o.y=H;if(o.y>H)o.y=0;
+}
+function fullscreen(){
+ if(!document.fullscreenElement)
+  document.documentElement.requestFullscreen();
+}
+
+loop();
+</script>
+</body>
+</html>
